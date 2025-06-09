@@ -91,6 +91,11 @@ async function getAnimeInfo(animeName) {
             episodeUrl: anime.siteUrl
         };
     } catch (err) {
+        if (err?.networkError?.statusCode === 429) {
+            console.warn(`[RETRY] Hit 429 for ${animeName}, retrying in 2s...`);
+            await new Promise(res => setTimeout(res, 2000)); // Wait 2s
+            return await getAnimeInfo(animeName); // Retry once
+        }
         console.error("Anime fetch error:", err);
         return null;
     }
@@ -135,8 +140,10 @@ async function notifySubscribers(type, title, url, userIds) {
 
         // ✅ fallback to commandChannel if notificationChannel is not set
         const channelId = subscription.notificationChannelId || subscription.commandChannelId;
-        if (!channelId) continue;
-
+        if (!channelId) {
+            console.log(`[SKIP] No valid channel ID for user ${userId}`);
+            continue;
+        }
         try {
             const channel = await client.channels.fetch(channelId);
             const mention = `<@${userId}>`;
@@ -171,7 +178,7 @@ cron.schedule('* * * * *', async () => {
 
     // === Anime Check ===
     for (const [animeTitle, entries] of animeMap.entries()) {
-        await new Promise(res => setTimeout(res, 300 + Math.random() * 300));
+        await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500)); // 500–1000ms
         const info = await getAnimeInfo(animeTitle);
         if (!info) {
             console.log(`[SKIP] No info for anime: ${animeTitle}`);
