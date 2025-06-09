@@ -147,64 +147,69 @@ async function notifySubscribers(type, title, url, userIds) {
         }
     }
 }
-
+// ✅ Combined Option 1 (random delay) and Option 2 (deduplication)
 cron.schedule('* * * * *', async () => {
     console.log('[CRON] Checking for updates...');
 
     const subscriptions = await Subscription.find({});
+    const animeMap = new Map(); // Map<title, { userId, subRef }[]>
+    const mangaMap = new Map();
+
+    // Group subscriptions by title
     for (const sub of subscriptions) {
-        let updated = false; // track if we should save this sub
-
-        // Check manga subscriptions
-        for (const manga of sub.mangaSubscriptions) {
-            const info = await getMangaInfo(manga.name);
-            await new Promise(resolve => setTimeout(resolve, 300)); // delay for rate limit
-
-            if (!info) {
-                console.log(`[SKIP] No manga info for ${manga.name}`);
-                continue;
-            }
-
-            const { mangaTitle, latestChapter, latestChapterUrl } = info;
-            manga.newChapter = latestChapter;
-
-            console.log(`[CHECK] Manga: ${manga.name} — Current: ${manga.currentChapter}, Latest: ${latestChapter}`);
-
-            if ((manga.currentChapter || 0) < latestChapter) {
-                console.log(`[NOTIFY] New manga chapter for ${manga.name}`);
-                await notifySubscribers('manga', mangaTitle, latestChapterUrl, [sub.userId]);
-                manga.currentChapter = latestChapter;
-                updated = true;
-            }
-        }
-
-        // Check anime subscriptions
         for (const anime of sub.animeSubscriptions) {
-            const info = await getAnimeInfo(anime.name);
-            await new Promise(resolve => setTimeout(resolve, 300)); // delay for rate limit
+            const key = anime.name.toLowerCase();
+            if (!animeMap.has(key)) animeMap.set(key, []);
+            animeMap.get(key).push({ userId: sub.userId, anime, sub });
+        }
+        for (const manga of sub.mangaSubscriptions) {
+            const key = manga.name.toLowerCase();
+            if (!mangaMap.has(key)) mangaMap.set(key, []);
+            mangaMap.get(key).push({ userId: sub.userId, manga, sub });
+        }
+    }
 
-            if (!info) {
-                console.log(`[SKIP] No anime info for ${anime.name}`);
-                continue;
-            }
-
-            const { animeTitle, latestEpisode, episodeUrl } = info;
-            anime.newEpisode = latestEpisode;
-
-            console.log(`[CHECK] Anime: ${anime.name} — Current: ${anime.currentEpisode}, Latest: ${latestEpisode}`);
-
-            if ((anime.currentEpisode || 0) < latestEpisode) {
-                console.log(`[NOTIFY] New anime episode for ${anime.name}`);
-                await notifySubscribers('anime', animeTitle, episodeUrl, [sub.userId]);
-                anime.currentEpisode = latestEpisode;
-                updated = true;
-            }
+    // === Anime Check ===
+    for (const [animeTitle, entries] of animeMap.entries()) {
+        await new Promise(res => setTimeout(res, 300 + Math.random() * 300));
+        const info = await getAnimeInfo(animeTitle);
+        if (!info) {
+            console.log(`[SKIP] No info for anime: ${animeTitle}`);
+            continue;
         }
 
-        // Save only if changes were made
-        if (updated) {
-            await sub.save();
-            console.log(`[SAVE] Updated subscription for ${sub.userId}`);
+        for (const { userId, anime, sub } of entries) {
+            console.log(`[CHECK] Anime: ${anime.name} — Current: ${anime.currentEpisode}, Latest: ${info.latestEpisode}`);
+            anime.newEpisode = info.latestEpisode;
+
+            if ((anime.currentEpisode || 0) < info.latestEpisode) {
+                console.log(`[NOTIFY] New episode for ${anime.name} → notifying ${userId}`);
+                await notifySubscribers('anime', info.animeTitle, info.episodeUrl, [userId]);
+                anime.currentEpisode = info.latestEpisode;
+                await sub.save();
+            }
+        }
+    }
+
+    // === Manga Check ===
+    for (const [mangaTitle, entries] of mangaMap.entries()) {
+        await new Promise(res => setTimeout(res, 300 + Math.random() * 300));
+        const info = await getMangaInfo(mangaTitle);
+        if (!info) {
+            console.log(`[SKIP] No info for manga: ${mangaTitle}`);
+            continue;
+        }
+
+        for (const { userId, manga, sub } of entries) {
+            console.log(`[CHECK] Manga: ${manga.name} — Current: ${manga.currentChapter}, Latest: ${info.latestChapter}`);
+            manga.newChapter = info.latestChapter;
+
+            if ((manga.currentChapter || 0) < info.latestChapter) {
+                console.log(`[NOTIFY] New chapter for ${manga.name} → notifying ${userId}`);
+                await notifySubscribers('manga', info.mangaTitle, info.latestChapterUrl, [userId]);
+                manga.currentChapter = info.latestChapter;
+                await sub.save();
+            }
         }
     }
 });
