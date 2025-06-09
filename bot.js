@@ -153,36 +153,61 @@ cron.schedule('* * * * *', async () => {
 
     const subscriptions = await Subscription.find({});
     for (const sub of subscriptions) {
+        let updated = false; // track if we should save this sub
+
+        // Check manga subscriptions
         for (const manga of sub.mangaSubscriptions) {
             const info = await getMangaInfo(manga.name);
-            if (!info) continue;
+            await new Promise(resolve => setTimeout(resolve, 300)); // delay for rate limit
+
+            if (!info) {
+                console.log(`[SKIP] No manga info for ${manga.name}`);
+                continue;
+            }
 
             const { mangaTitle, latestChapter, latestChapterUrl } = info;
             manga.newChapter = latestChapter;
 
+            console.log(`[CHECK] Manga: ${manga.name} — Current: ${manga.currentChapter}, Latest: ${latestChapter}`);
+
             if ((manga.currentChapter || 0) < latestChapter) {
-                await notifySubscribers('manga', mangaTitle, latestChapterUrl, sub);
+                console.log(`[NOTIFY] New manga chapter for ${manga.name}`);
+                await notifySubscribers('manga', mangaTitle, latestChapterUrl, [sub.userId]);
                 manga.currentChapter = latestChapter;
+                updated = true;
             }
         }
 
+        // Check anime subscriptions
         for (const anime of sub.animeSubscriptions) {
             const info = await getAnimeInfo(anime.name);
-            if (!info) continue;
+            await new Promise(resolve => setTimeout(resolve, 300)); // delay for rate limit
+
+            if (!info) {
+                console.log(`[SKIP] No anime info for ${anime.name}`);
+                continue;
+            }
 
             const { animeTitle, latestEpisode, episodeUrl } = info;
             anime.newEpisode = latestEpisode;
 
+            console.log(`[CHECK] Anime: ${anime.name} — Current: ${anime.currentEpisode}, Latest: ${latestEpisode}`);
+
             if ((anime.currentEpisode || 0) < latestEpisode) {
-                await notifySubscribers('anime', animeTitle, episodeUrl, sub);
+                console.log(`[NOTIFY] New anime episode for ${anime.name}`);
+                await notifySubscribers('anime', animeTitle, episodeUrl, [sub.userId]);
                 anime.currentEpisode = latestEpisode;
+                updated = true;
             }
         }
 
-        await sub.save();
+        // Save only if changes were made
+        if (updated) {
+            await sub.save();
+            console.log(`[SAVE] Updated subscription for ${sub.userId}`);
+        }
     }
 });
-
 
 
 function shouldSkipCommand(subscription, message) {
