@@ -301,6 +301,8 @@ client.on('messageCreate', async (message) => {
             notificationChannelId: existingGuildSub?.notificationChannelId || null,
             commandChannelId: existingGuildSub?.commandChannelId || null
         });
+        await subscription.save(); // ✅ You forgot to save this new user
+
     }
     if (subscription.commandChannelId && message.channel.id !== subscription.commandChannelId) {
         console.log(`[BLOCKED] Command from wrong channel. Expected: ${subscription.commandChannelId}, got: ${message.channel.id}`);
