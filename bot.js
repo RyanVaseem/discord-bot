@@ -164,7 +164,7 @@ cron.schedule('* * * * *', async () => {
     console.log('[CRON] Checking for updates...');
 
     const subscriptions = await Subscription.find({});
-    const animeMap = new Map(); // title -> { userId, anime, sub }
+    const animeMap = new Map(); // title -> array of { userId, anime, sub, channelId }
     const mangaMap = new Map();
 
     // Group all subscriptions by anime and manga title (case-insensitive)
@@ -172,12 +172,22 @@ cron.schedule('* * * * *', async () => {
         for (const anime of sub.animeSubscriptions) {
             const key = anime.name.toLowerCase();
             if (!animeMap.has(key)) animeMap.set(key, []);
-            animeMap.get(key).push({ userId: sub.userId, anime, sub });
+            animeMap.get(key).push({
+                userId: sub.userId,
+                anime,
+                sub,
+                channelId: sub.notificationChannelId || sub.commandChannelId
+            });
         }
         for (const manga of sub.mangaSubscriptions) {
             const key = manga.name.toLowerCase();
             if (!mangaMap.has(key)) mangaMap.set(key, []);
-            mangaMap.get(key).push({ userId: sub.userId, manga, sub });
+            mangaMap.get(key).push({
+                userId: sub.userId,
+                manga,
+                sub,
+                channelId: sub.notificationChannelId || sub.commandChannelId
+            });
         }
     }
 
@@ -190,20 +200,24 @@ cron.schedule('* * * * *', async () => {
             continue;
         }
 
-        const notifyQueue = [];
-
-        for (const { userId, anime, sub } of entries) {
+        for (const { userId, anime, sub, channelId } of entries) {
             console.log(`[CHECK] Anime: ${anime.name} — Current: ${anime.currentEpisode}, Latest: ${info.latestEpisode}`);
             anime.newEpisode = info.latestEpisode;
             if ((anime.currentEpisode || 0) < info.latestEpisode) {
-                notifyQueue.push(userId);
+                console.log(`[NOTIFY] New episode for ${anime.name} → notifying ${userId}`);
+                if (channelId) {
+                    const mention = `<@${userId}>`;
+                    const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${info.episodeUrl}`;
+                    try {
+                        const channel = await client.channels.fetch(channelId);
+                        await channel.send(msg);
+                    } catch (err) {
+                        console.error(`[ERROR] Failed to notify ${userId} in ${channelId}`, err);
+                    }
+                }
                 anime.currentEpisode = info.latestEpisode;
+                await sub.save();
             }
-        }
-
-        if (notifyQueue.length > 0) {
-            await notifySubscribers('anime', info.animeTitle, info.episodeUrl, [...new Set(notifyQueue)]);
-            for (const { sub } of entries) await sub.save();
         }
     }
 
@@ -216,23 +230,28 @@ cron.schedule('* * * * *', async () => {
             continue;
         }
 
-        const notifyQueue = [];
-
-        for (const { userId, manga, sub } of entries) {
+        for (const { userId, manga, sub, channelId } of entries) {
             console.log(`[CHECK] Manga: ${manga.name} — Current: ${manga.currentChapter}, Latest: ${info.latestChapter}`);
             manga.newChapter = info.latestChapter;
             if ((manga.currentChapter || 0) < info.latestChapter) {
-                notifyQueue.push(userId);
+                console.log(`[NOTIFY] New chapter for ${manga.name} → notifying ${userId}`);
+                if (channelId) {
+                    const mention = `<@${userId}>`;
+                    const msg = `${mention}, new manga update for **${info.mangaTitle}**!\n${info.latestChapterUrl}`;
+                    try {
+                        const channel = await client.channels.fetch(channelId);
+                        await channel.send(msg);
+                    } catch (err) {
+                        console.error(`[ERROR] Failed to notify ${userId} in ${channelId}`, err);
+                    }
+                }
                 manga.currentChapter = info.latestChapter;
+                await sub.save();
             }
-        }
-
-        if (notifyQueue.length > 0) {
-            await notifySubscribers('manga', info.mangaTitle, info.latestChapterUrl, [...new Set(notifyQueue)]);
-            for (const { sub } of entries) await sub.save();
         }
     }
 });
+
 
 
 function shouldSkipCommand(subscription, message) {
@@ -271,16 +290,17 @@ client.on('messageCreate', async (message) => {
     const guildId = message.guild?.id;
     let subscription = await Subscription.findOne({ userId, guildId });
     if (!subscription) {
-        console.log(`[DB] Creating new subscription for ${userId} in guild ${guildId}`);
+        // Try to inherit settings from another user in the same guild
+        const existingGuildSub = await Subscription.findOne({ guildId });
+
         subscription = new Subscription({
             userId,
             guildId,
             animeSubscriptions: [],
             mangaSubscriptions: [],
-            notificationChannelId: null,
-            commandChannelId: null
+            notificationChannelId: existingGuildSub?.notificationChannelId || null,
+            commandChannelId: existingGuildSub?.commandChannelId || null
         });
-        await subscription.save();
     }
     if (subscription.commandChannelId && message.channel.id !== subscription.commandChannelId) {
         console.log(`[BLOCKED] Command from wrong channel. Expected: ${subscription.commandChannelId}, got: ${message.channel.id}`);
