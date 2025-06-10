@@ -180,8 +180,6 @@ async function getAllStreamingLinks(animeTitle, episodeNumber) {
     return allLinks;
 }
 
-import axios from 'axios';
-import cheerio from 'cheerio';
 
 async function getMangaInfo(mangaName) {
     try {
