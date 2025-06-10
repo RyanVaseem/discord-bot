@@ -100,6 +100,54 @@ async function getAnimeInfo(animeName) {
         return null;
     }
 }
+import cheerio from 'cheerio';
+
+async function fetchAnimeKaiLink(animeTitle, episodeNumber) {
+    try {
+        const searchUrl = `https://animekai.to/search?keyword=${encodeURIComponent(animeTitle)}`;
+        const { data } = await axios.get(searchUrl);
+        const $ = cheerio.load(data);
+
+        const result = $('.film_list-wrap .flw-item a').first().attr('href');
+        if (!result) return null;
+
+        const match = result.match(/\/watch\/([^\/?#]+)/); // extract slug-id
+        const slugId = match ? match[1] : null;
+        if (!slugId) return null;
+
+        return `https://animekai.to/watch/${slugId}#ep=${episodeNumber}`;
+    } catch (err) {
+        console.error(`[AnimeKai] Error for "${animeTitle}":`, err.message);
+        return null;
+    }
+}
+function slugify(title) {
+    return title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)+/g, '');
+}
+
+function buildStaticStreamingLinks(animeTitle, episodeNumber) {
+    const slug = slugify(animeTitle);
+
+    return {
+        HiAnime: `https://hianime.to/watch/${slug}-episode-${episodeNumber}`,
+        ZoroTV: `https://zorotv.com.lv/watch/${slug}-episode-${episodeNumber}`,
+        GogoAnime: `https://gogoanime.by/${slug}-episode-${episodeNumber}`
+    };
+}
+async function getAllStreamingLinks(animeTitle, episodeNumber) {
+    const staticLinks = buildStaticStreamingLinks(animeTitle, episodeNumber);
+    const animeKaiLink = await fetchAnimeKaiLink(animeTitle, episodeNumber);
+
+    const allLinks = {
+        ...staticLinks,
+        AnimeKai: animeKaiLink || 'Not found'
+    };
+
+    return allLinks;
+}
 
 async function getMangaInfo(mangaName) {
     try {
@@ -116,7 +164,9 @@ async function getMangaInfo(mangaName) {
         const mangaId = manga.id;
         const title = manga.attributes.title.en || manga.attributes.title.jp || mangaName;
 
-        const chaptersRes = await axios.get(`https://api.mangadex.org/chapter?manga=${mangaId}&order[chapter]=desc&limit=1`);
+        const chaptersRes = await axios.get(
+            `https://api.mangadex.org/chapter?manga=${mangaId}&translatedLanguage[]=en&order[chapter]=desc&limit=1`
+        );
         const latest = chaptersRes.data.data[0];
         const latestNum = parseFloat(latest?.attributes.chapter) || 0;
         const latestUrl = `https://mangadex.org/chapter/${latest.id}`;
@@ -205,9 +255,14 @@ cron.schedule('* * * * *', async () => {
             anime.newEpisode = info.latestEpisode;
             if ((anime.currentEpisode || 0) < info.latestEpisode) {
                 console.log(`[NOTIFY] New episode for ${anime.name} → notifying ${userId}`);
+                const links = await getAllStreamingLinks(info.animeTitle, info.latestEpisode);
+                const linksText = Object.entries(links)
+                    .map(([name, url]) => `• **${name}**: ${url}`)
+                    .join('\n');
+
                 if (channelId) {
                     const mention = `<@${userId}>`;
-                    const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${info.episodeUrl}`;
+                    const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${linksText}`;
                     try {
                         const channel = await client.channels.fetch(channelId);
                         await channel.send(msg);
@@ -277,6 +332,8 @@ client.on('messageCreate', async (message) => {
         'help', 'h',
         'notify_anime',
         'notify_manga',
+        'delete_anime',        
+        'delete_manga',          
         'my_subscriptions',
         'get_anime',
         'get_manga',
@@ -301,7 +358,7 @@ client.on('messageCreate', async (message) => {
             notificationChannelId: existingGuildSub?.notificationChannelId || null,
             commandChannelId: existingGuildSub?.commandChannelId || null
         });
-        await subscription.save(); // ✅ You forgot to save this new user
+        await subscription.save(); 
 
     }
     if (subscription.commandChannelId && message.channel.id !== subscription.commandChannelId) {
@@ -314,54 +371,63 @@ client.on('messageCreate', async (message) => {
     if (!validCommands.includes(command)) {
         return message.channel.send(`Unknown command: \`${command}\`\nTry \`@BotName help\` to see what I can do.`);
     }
-    if (command === 'h' || command === 'help'){
-            const embed = new EmbedBuilder()
-        .setColor('#0099ff')
-        .setTitle('Anime/Manga Bot Commands')
-        .setDescription('Here are the available commands you can use:')
-        .addFields(
-            {
-                name: '**notify_anime <name>**',
-                value: 'Subscribe to an anime. You will be notified when a new episode is released.',
-                inline: false
-            },
-            {
-                name: '**notify_manga <name>**',
-                value: 'Subscribe to a manga. You will be notified when a new chapter is released.',
-                inline: false
-            },
-            {
-                name: '**my_subscriptions**',
-                value: 'Shows the anime and manga you’re subscribed to.',
-                inline: false
-            },
-            {
-                name: '**get_anime <name>**',
-                value: 'Fetches information about a specific anime.',
-                inline: false
-            },
-            {
-                name: '**get_manga <name>**',
-                value: 'Fetches information about a specific manga.',
-                inline: false
-            },
-            { 
-                name: 'setchannel <channel name>', 
-                value: 'Set the only channel allowed to run commands.', 
-                inline: false 
-            },
-            { 
-                name: 'setnotificationchannel <channel name>', 
-                value: 'Set the channel where notifications are sent (optional).', 
-                inline: false 
-            }
-
-        )
-        .setFooter({ text: 'Mention the bot or use @BotName help to see this menu anytime.' });
+    if (command === 'h' || command === 'help') {
+        const embed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('Anime/Manga Bot Commands')
+            .setDescription('Here are the available commands you can use:')
+            .addFields(
+                {
+                    name: '**notify_anime <name>**',
+                    value: 'Subscribe to an anime. You will be notified when a new episode is released.',
+                    inline: false
+                },
+                {
+                    name: '**notify_manga <name>**',
+                    value: 'Subscribe to a manga. You will be notified when a new chapter is released.',
+                    inline: false
+                },
+                {
+                    name: '**delete_anime <name>**',
+                    value: 'Unsubscribe from an anime so you no longer get episode notifications.',
+                    inline: false
+                },
+                {
+                    name: '**delete_manga <name>**',
+                    value: 'Unsubscribe from a manga so you no longer get chapter notifications.',
+                    inline: false
+                },
+                {
+                    name: '**my_subscriptions**',
+                    value: 'Shows the anime and manga you’re subscribed to.',
+                    inline: false
+                },
+                {
+                    name: '**get_anime <name>**',
+                    value: 'Fetches information about a specific anime.',
+                    inline: false
+                },
+                {
+                    name: '**get_manga <name>**',
+                    value: 'Fetches information about a specific manga.',
+                    inline: false
+                },
+                { 
+                    name: '**setchannel <channel name>**', 
+                    value: 'Set the only channel allowed to run commands.', 
+                    inline: false 
+                },
+                { 
+                    name: '**setnotificationchannel <channel name>**', 
+                    value: 'Set the channel where notifications are sent (optional).', 
+                    inline: false 
+                }
+            )
+            .setFooter({ text: 'Mention the bot or use @BotName help to see this menu anytime.' });
 
         return message.channel.send({ embeds: [embed] });
-
     }
+
 
 
     if (command === 'notify_manga') {
@@ -462,6 +528,24 @@ client.on('messageCreate', async (message) => {
             );
         return message.channel.send({ embeds: [embed] });
     }
+    if (command === 'delete_anime') {
+        const animeName = args.join(' ').toLowerCase();
+        const index = subscription.animeSubscriptions.findIndex(a => a.name.toLowerCase() === animeName);
+        if (index === -1) return message.channel.send(`You're not subscribed to ${animeName}.`);
+        subscription.animeSubscriptions.splice(index, 1);
+        await subscription.save();
+        return message.channel.send(`Unsubscribed from ${animeName} anime updates.`);
+    }
+
+    if (command === 'delete_manga') {
+        const mangaName = args.join(' ').toLowerCase();
+        const index = subscription.mangaSubscriptions.findIndex(m => m.name.toLowerCase() === mangaName);
+        if (index === -1) return message.channel.send(`You're not subscribed to ${mangaName}.`);
+        subscription.mangaSubscriptions.splice(index, 1);
+        await subscription.save();
+        return message.channel.send(`Unsubscribed from ${mangaName} manga updates.`);
+    }
+
 
     return message.channel.send("Unknown command or missing arguments.");
 });
@@ -471,8 +555,8 @@ client.once('ready', () => {
 
     // Define your daily status options
     const dailyStatuses = [
-        { name: 'new anime episodes...', type: 3 },  // Watching
-        { name: 'manga updates...', type: 1 }        // Streaming
+        { name: 'new anime episodes...', type: 3 }, 
+        { name: 'manga updates...', type: 1 }        
     ];
 
     const setDailyStatus = () => {
