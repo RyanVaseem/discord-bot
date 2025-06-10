@@ -121,6 +121,32 @@ async function fetchAnimeKaiLink(animeTitle, episodeNumber) {
         return null;
     }
 }
+
+
+async function fetchHiAnimeLink(animeTitle, episodeNumber) {
+    try {
+        const searchUrl = `https://hianime.to/search?keyword=${encodeURIComponent(animeTitle)}`;
+        const { data: searchData } = await axios.get(searchUrl);
+        const $ = cheerio.load(searchData);
+
+        const animeSlug = $('.flw-item a').first().attr('href');  // e.g., /watch/one-piece-100
+        if (!animeSlug) return null;
+
+        const animePageUrl = `https://hianime.to${animeSlug}`;
+        const { data: animePage } = await axios.get(animePageUrl);
+        const $$ = cheerio.load(animePage);
+
+        const epLink = $$(`a.ep-item[data-number="${episodeNumber}"]`).attr('href');
+        if (!epLink) return null;
+
+        return `https://hianime.to${epLink}`;
+    } catch (err) {
+        console.error(`[HiAnime] Error for "${animeTitle}":`, err.message);
+        return null;
+    }
+}
+
+
 function slugify(title) {
     return title
         .toLowerCase()
@@ -151,36 +177,31 @@ async function getAllStreamingLinks(animeTitle, episodeNumber) {
 
 async function getMangaInfo(mangaName) {
     try {
-        const searchUrl = `https://api.mangadex.org/manga?title=${encodeURIComponent(mangaName)}`;
-        const searchRes = await axios.get(searchUrl);
+        const searchUrl = `https://mangapill.com/search?q=${encodeURIComponent(mangaName)}`;
+        const { data: searchHtml } = await axios.get(searchUrl);
+        const $ = cheerio.load(searchHtml);
 
-        const mangaData = searchRes.data.data; // ✅ This was missing
-        if (!mangaData || mangaData.length === 0) return null;
+        const mangaPath = $('.manga-list .manga-item a').first().attr('href');
+        if (!mangaPath) return null;
 
-        const manga = mangaData.find(m =>
-            m.attributes.title.en?.toLowerCase() === mangaName.toLowerCase()
-        ) || mangaData[0];
+        const mangaUrl = `https://mangapill.com${mangaPath}`;
+        const { data: mangaPage } = await axios.get(mangaUrl);
+        const $$ = cheerio.load(mangaPage);
 
-        const mangaId = manga.id;
-        const title = manga.attributes.title.en || manga.attributes.title.jp || mangaName;
-
-        const chaptersRes = await axios.get(
-            `https://api.mangadex.org/chapter?manga=${mangaId}&translatedLanguage[]=en&order[chapter]=desc&limit=1`
-        );
-        const latest = chaptersRes.data.data[0];
-        const latestNum = parseFloat(latest?.attributes.chapter) || 0;
-        const latestUrl = `https://mangadex.org/chapter/${latest.id}`;
+        const chapterLink = $$('a.chapter').first().attr('href');
+        const title = $('h1').text().trim();
 
         return {
             mangaTitle: title,
-            latestChapter: latestNum,
-            latestChapterUrl: latestUrl
+            latestChapterUrl: `https://mangapill.com${chapterLink}`,
+            latestChapter: parseFloat(chapterLink?.match(/chapter-(\d+)/)?.[1] || 0)
         };
     } catch (err) {
-        console.error("Manga fetch error:", err);
+        console.error("MangaPill fetch error:", err.message);
         return null;
     }
 }
+
 
 
 async function notifySubscribers(type, title, url, userIds) {
@@ -204,11 +225,7 @@ async function notifySubscribers(type, title, url, userIds) {
         }
     }
 }
-// ✅ Combined Option 1 (random delay) and Option 2 (deduplication)
-// ✅ Fixed version of the cron job to ensure:
-// 1. Notifications are only sent once per user per update
-// 2. Only anime or manga updates are triggered as needed
-// 3. Works across multiple servers per user
+
 
 cron.schedule('* * * * *', async () => {
     console.log('[CRON] Checking for updates...');
@@ -259,6 +276,8 @@ cron.schedule('* * * * *', async () => {
                 const linksText = Object.entries(links)
                     .map(([name, url]) => `• **${name}**: ${url}`)
                     .join('\n');
+                    const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${linkMsg}`;
+                    await channel.send(msg);
 
                 if (channelId) {
                     const mention = `<@${userId}>`;
