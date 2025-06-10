@@ -105,7 +105,12 @@ import cheerio from 'cheerio';
 async function fetchAnimeKaiLink(animeTitle, episodeNumber) {
     try {
         const searchUrl = `https://animekai.to/search?keyword=${encodeURIComponent(animeTitle)}`;
-        const { data } = await axios.get(searchUrl);
+        const { data } = await axios.get(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+        });
         const $ = cheerio.load(data);
 
         const result = $('.film_list-wrap .flw-item a').first().attr('href');
@@ -175,32 +180,50 @@ async function getAllStreamingLinks(animeTitle, episodeNumber) {
     return allLinks;
 }
 
+import axios from 'axios';
+import cheerio from 'cheerio';
+
 async function getMangaInfo(mangaName) {
     try {
-        const searchUrl = `https://mangapill.com/search?q=${encodeURIComponent(mangaName)}`;
-        const { data: searchHtml } = await axios.get(searchUrl);
-        const $ = cheerio.load(searchHtml);
+        // 1. Search for the manga on TCB
+        const searchUrl = `https://www.tcbscans.org/?s=${encodeURIComponent(mangaName)}`;
+        const searchRes = await axios.get(searchUrl);
+        const $search = cheerio.load(searchRes.data);
 
-        const mangaPath = $('.manga-list .manga-item a').first().attr('href');
-        if (!mangaPath) return null;
+        const mangaLink = $search('h3.post-title a').first().attr('href');
+        if (!mangaLink) {
+            console.warn(`[TCB] No search result found for: ${mangaName}`);
+            return null;
+        }
 
-        const mangaUrl = `https://mangapill.com${mangaPath}`;
-        const { data: mangaPage } = await axios.get(mangaUrl);
-        const $$ = cheerio.load(mangaPage);
+        // 2. Visit the manga page and extract latest chapter
+        const pageRes = await axios.get(mangaLink);
+        const $page = cheerio.load(pageRes.data);
 
-        const chapterLink = $$('a.chapter').first().attr('href');
-        const title = $('h1').text().trim();
+        const title = $page('h1.entry-title').text().trim() || mangaName;
+
+        const latestChapterAnchor = $page('ul.main li a').first();
+        const latestChapterUrl = latestChapterAnchor.attr('href');
+        const chapterText = latestChapterAnchor.text().trim();
+        const chapterNum = parseFloat(chapterText.replace(/[^0-9.]/g, ''));
+
+        if (!latestChapterUrl || isNaN(chapterNum)) {
+            console.warn(`[TCB] Failed to extract latest chapter for ${mangaName}`);
+            return null;
+        }
 
         return {
             mangaTitle: title,
-            latestChapterUrl: `https://mangapill.com${chapterLink}`,
-            latestChapter: parseFloat(chapterLink?.match(/chapter-(\d+)/)?.[1] || 0)
+            latestChapter: chapterNum,
+            latestChapterUrl: latestChapterUrl
         };
+
     } catch (err) {
-        console.error("MangaPill fetch error:", err.message);
+        console.error(`[TCB] Error while scraping ${mangaName}:`, err.message);
         return null;
     }
 }
+
 
 
 
