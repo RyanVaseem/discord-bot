@@ -107,12 +107,15 @@ async function fetchAnimeKaiLink(animeTitle, episodeNumber) {
         const searchUrl = `https://animekai.to/search?keyword=${encodeURIComponent(animeTitle)}`;
         const { data } = await axios.get(searchUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9'
-            }
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+                    '(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+                'Referer': 'https://animekai.to/',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
         });
-        const $ = cheerio.load(data);
 
+        const $ = cheerio.load(data);
         const result = $('.film_list-wrap .flw-item a').first().attr('href');
         if (!result) return null;
 
@@ -123,7 +126,7 @@ async function fetchAnimeKaiLink(animeTitle, episodeNumber) {
         return `https://animekai.to/watch/${slugId}#ep=${episodeNumber}`;
     } catch (err) {
         console.error(`[AnimeKai] Error for "${animeTitle}":`, err.message);
-        return null;
+        return null; // Don't throw — return null so it won't crash the notification system
     }
 }
 
@@ -170,14 +173,18 @@ function buildStaticStreamingLinks(animeTitle, episodeNumber) {
 }
 async function getAllStreamingLinks(animeTitle, episodeNumber) {
     const staticLinks = buildStaticStreamingLinks(animeTitle, episodeNumber);
-    const animeKaiLink = await fetchAnimeKaiLink(animeTitle, episodeNumber);
 
-    const allLinks = {
+    let animeKaiLink = 'Not available';
+    try {
+        animeKaiLink = await fetchAnimeKaiLink(animeTitle, episodeNumber);
+    } catch (err) {
+        console.error(`[AnimeKai] Failed for "${animeTitle}": ${err.message}`);
+    }
+
+    return {
         ...staticLinks,
         AnimeKai: animeKaiLink || 'Not found'
     };
-
-    return allLinks;
 }
 
 
@@ -291,18 +298,25 @@ cron.schedule('* * * * *', async () => {
         for (const { userId, anime, sub, channelId } of entries) {
             console.log(`[CHECK] Anime: ${anime.name} — Current: ${anime.currentEpisode}, Latest: ${info.latestEpisode}`);
             anime.newEpisode = info.latestEpisode;
+
             if ((anime.currentEpisode || 0) < info.latestEpisode) {
                 console.log(`[NOTIFY] New episode for ${anime.name} → notifying ${userId}`);
-                const links = await getAllStreamingLinks(info.animeTitle, info.latestEpisode);
-                const linksText = Object.entries(links)
-                    .map(([name, url]) => `• **${name}**: ${url}`)
-                    .join('\n');
-                    const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${linkMsg}`;
-                    await channel.send(msg);
+
+                const mention = `<@${userId}>`;
+
+                let linksText = '*Streaming links currently unavailable.*';
+                try {
+                    const links = await getAllStreamingLinks(info.animeTitle, info.latestEpisode);
+                    linksText = Object.entries(links)
+                        .map(([name, url]) => `• **${name}**: ${url}`)
+                        .join('\n');
+                } catch (err) {
+                    console.error(`[ERROR] Failed to fetch streaming links for "${info.animeTitle}": ${err.message}`);
+                }
+
+                const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${linksText}`;
 
                 if (channelId) {
-                    const mention = `<@${userId}>`;
-                    const msg = `${mention}, new anime update for **${info.animeTitle}**!\n${linksText}`;
                     try {
                         const channel = await client.channels.fetch(channelId);
                         await channel.send(msg);
@@ -310,10 +324,12 @@ cron.schedule('* * * * *', async () => {
                         console.error(`[ERROR] Failed to notify ${userId} in ${channelId}`, err);
                     }
                 }
+
                 anime.currentEpisode = info.latestEpisode;
                 await sub.save();
             }
         }
+
     }
 
     // === Manga Check ===
