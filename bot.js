@@ -162,26 +162,32 @@ function slugify(title) {
         .replace(/(^-|-$)+/g, '');
 }
 
-function buildStaticStreamingLinks(animeTitle, episodeNumber) {
+async function getAllStreamingLinks(animeTitle, episodeNumber) {
+    // Static ones (Zoro, GogoAnime)
     const slug = slugify(animeTitle);
-
-    return {
-        HiAnime: `https://hianime.to/watch/${slug}-episode-${episodeNumber}`,
+    const staticLinks = {
         ZoroTV: `https://zorotv.com.lv/watch/${slug}-episode-${episodeNumber}`,
         GogoAnime: `https://gogoanime.by/${slug}-episode-${episodeNumber}`
     };
-}
-async function getAllStreamingLinks(animeTitle, episodeNumber) {
-    const staticLinks = buildStaticStreamingLinks(animeTitle, episodeNumber);
 
-    let animeKaiLink = 'Not available';
+    // Scraped links (HiAnime + AnimeKai)
+    let hiAnimeLink = 'Not found';
+    let animeKaiLink = 'Not found';
+
+    try {
+        hiAnimeLink = await fetchHiAnimeLink(animeTitle, episodeNumber);
+    } catch (err) {
+        console.error(`[HiAnime] Error for "${animeTitle}":`, err.message);
+    }
+
     try {
         animeKaiLink = await fetchAnimeKaiLink(animeTitle, episodeNumber);
     } catch (err) {
-        console.error(`[AnimeKai] Failed for "${animeTitle}": ${err.message}`);
+        console.error(`[AnimeKai] Error for "${animeTitle}":`, err.message);
     }
 
     return {
+        HiAnime: hiAnimeLink || 'Not found',
         ...staticLinks,
         AnimeKai: animeKaiLink || 'Not found'
     };
