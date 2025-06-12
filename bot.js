@@ -204,6 +204,7 @@ async function getAllStreamingLinks(animeTitle, episodeNumber) {
 
 async function getMangaInfo(mangaName) {
     try {
+        // 1. Search Manga
         const searchUrl = `https://api.mangadex.org/manga?title=${encodeURIComponent(mangaName)}&limit=5`;
         const { data: searchRes } = await axios.get(searchUrl);
         const manga = searchRes.data?.[0];
@@ -214,30 +215,33 @@ async function getMangaInfo(mangaName) {
 
         const mangaId = manga.id;
 
-        const chapterUrl = `https://api.mangadex.org/chapter?manga=${mangaId}&translatedLanguage[]=en&order[chapter]=desc&limit=1`;
-        const { data: engRes } = await axios.get(chapterUrl);
-        let chapter = engRes.data?.[0];
+        // 2. Fetch ALL recent chapters regardless of language
+        const chapterListUrl = `https://api.mangadex.org/chapter?manga=${mangaId}&order[chapter]=desc&limit=10`;
+        const { data: allChaptersRes } = await axios.get(chapterListUrl);
+        const allChapters = allChaptersRes.data || [];
 
-        let lang = 'en';
+        if (allChapters.length === 0) return null;
 
-        // fallback: get any chapter if English isn't available
-        if (!chapter) {
-            const fallbackUrl = `https://api.mangadex.org/chapter?manga=${mangaId}&order[chapter]=desc&limit=1`;
-            const { data: fallbackRes } = await axios.get(fallbackUrl);
-            chapter = fallbackRes.data?.[0];
-            lang = chapter?.attributes?.translatedLanguage || 'unknown';
-        }
+        const latestChapter = allChapters.find(c => !isNaN(parseFloat(c.attributes.chapter)));
+        const latestChapterNum = parseFloat(latestChapter?.attributes?.chapter || '0');
 
-        if (!chapter) return null;
+        // 3. Look for English version of that chapter
+        const englishChapter = allChapters.find(c =>
+            c.attributes.translatedLanguage === 'en' &&
+            parseFloat(c.attributes.chapter) === latestChapterNum
+        );
 
-        const chapterNumber = parseFloat(chapter.attributes.chapter || '0');
-        const chapterId = chapter.id;
+        let lang = englishChapter ? 'en' : latestChapter?.attributes?.translatedLanguage || 'unknown';
+        let chapterId = (englishChapter || latestChapter)?.id;
+
+        if (!chapterId) return null;
+
         const link = `https://mangadex.org/chapter/${chapterId}`;
-        const langNote = lang !== 'en' ? ` _(⚠️ English version not found — this one is in ${lang})_` : '';
+        const langNote = lang !== 'en' ? ` _(⚠️ English not available — using ${lang})_` : '';
 
         return {
             mangaTitle: manga.attributes.title.en || mangaName,
-            latestChapter: chapterNumber,
+            latestChapter: latestChapterNum,
             latestChapterUrl: `${link}${langNote}`
         };
     } catch (err) {
@@ -245,9 +249,6 @@ async function getMangaInfo(mangaName) {
         return null;
     }
 }
-
-
-
 
 
 
@@ -657,7 +658,11 @@ client.on('messageCreate', async (message) => {
             });
 
             const json = await response.json();
-            const answer = json.choices?.[0]?.message?.content;
+            if (!json.choices || !json.choices[0] || !json.choices[0].message || !json.choices[0].message.content) {
+                console.error("OpenAI response error:", JSON.stringify(json, null, 2));
+                return message.channel.send("⚠️ Couldn't get an answer. Check the logs.");
+            }
+            const answer = json.choices[0].message.content;
             if (!answer) return message.channel.send("⚠️ Couldn't get an answer.");
             return message.channel.send(`**Q:** ${userQuestion}\n**A:** ${answer}`);
         } catch (err) {
