@@ -237,7 +237,7 @@ async function getMangaInfo(mangaName) {
         if (!chapterId) return null;
 
         const link = `https://mangadex.org/chapter/${chapterId}`;
-        const langNote = lang !== 'en' ? ` _(⚠️ English not available — using ${lang})_` : '';
+        const langNote = lang !== 'en' ? ` _(English not available — using ${lang})_` : '';
 
         return {
             mangaTitle: manga.attributes.title.en || mangaName,
