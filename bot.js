@@ -8,6 +8,8 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 
 import express from 'express';
+import OpenAI from 'openai';
+
 
 // Setup a web server for Replit uptime
 const app = express();
@@ -16,6 +18,10 @@ app.listen(3000, () => console.log('Uptime server running on port 3000'));
 
 
 dotenv.config();
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 const client = new Client({
     intents: [
@@ -106,13 +112,11 @@ async function fetchAnimeKaiLink(animeTitle, episodeNumber) {
     try {
         const searchUrl = `https://animekai.to/search?keyword=${encodeURIComponent(animeTitle)}`;
         const { data } = await axios.get(searchUrl, {
-            headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-                    '(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-                'Referer': 'https://animekai.to/',
-                'Accept-Language': 'en-US,en;q=0.9',
-            },
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', // ✅ mimic browser
+            'Referer': 'https://animekai.to/',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
         });
 
         const $ = cheerio.load(data);
@@ -137,22 +141,26 @@ async function fetchHiAnimeLink(animeTitle, episodeNumber) {
         const { data: searchData } = await axios.get(searchUrl);
         const $ = cheerio.load(searchData);
 
-        const animeSlug = $('.flw-item a').first().attr('href');  // e.g., /watch/one-piece-100
-        if (!animeSlug) return null;
+        const match = $('.flw-item').filter((i, el) => {
+            const title = $(el).find('.dynamic-name').text().trim().toLowerCase();
+            return title.includes(animeTitle.toLowerCase());
+        }).first();
 
-        const animePageUrl = `https://hianime.to${animeSlug}`;
+        const slug = match.find('a').attr('href');
+        if (!slug) return null;
+
+        const animePageUrl = `https://hianime.to${slug}`;
         const { data: animePage } = await axios.get(animePageUrl);
         const $$ = cheerio.load(animePage);
 
         const epLink = $$(`a.ep-item[data-number="${episodeNumber}"]`).attr('href');
-        if (!epLink) return null;
-
-        return `https://hianime.to${epLink}`;
+        return epLink ? `https://hianime.to${epLink}` : null;
     } catch (err) {
-        console.error(`[HiAnime] Error for "${animeTitle}":`, err.message);
+        console.error(`[HiAnime] Error:`, err.message);
         return null;
     }
 }
+
 
 
 function slugify(title) {
@@ -196,44 +204,49 @@ async function getAllStreamingLinks(animeTitle, episodeNumber) {
 
 async function getMangaInfo(mangaName) {
     try {
-        // 1. Search for the manga on TCB
-        const searchUrl = `https://www.tcbscans.org/?s=${encodeURIComponent(mangaName)}`;
-        const searchRes = await axios.get(searchUrl);
-        const $search = cheerio.load(searchRes.data);
-
-        const mangaLink = $search('h3.post-title a').first().attr('href');
-        if (!mangaLink) {
-            console.warn(`[TCB] No search result found for: ${mangaName}`);
+        const searchUrl = `https://api.mangadex.org/manga?title=${encodeURIComponent(mangaName)}&limit=5`;
+        const { data: searchRes } = await axios.get(searchUrl);
+        const manga = searchRes.data?.[0];
+        if (!manga) {
+            console.warn(`[MangaDex] No result for ${mangaName}`);
             return null;
         }
 
-        // 2. Visit the manga page and extract latest chapter
-        const pageRes = await axios.get(mangaLink);
-        const $page = cheerio.load(pageRes.data);
+        const mangaId = manga.id;
 
-        const title = $page('h1.entry-title').text().trim() || mangaName;
+        const chapterUrl = `https://api.mangadex.org/chapter?manga=${mangaId}&translatedLanguage[]=en&order[chapter]=desc&limit=1`;
+        const { data: engRes } = await axios.get(chapterUrl);
+        let chapter = engRes.data?.[0];
 
-        const latestChapterAnchor = $page('ul.main li a').first();
-        const latestChapterUrl = latestChapterAnchor.attr('href');
-        const chapterText = latestChapterAnchor.text().trim();
-        const chapterNum = parseFloat(chapterText.replace(/[^0-9.]/g, ''));
+        let lang = 'en';
 
-        if (!latestChapterUrl || isNaN(chapterNum)) {
-            console.warn(`[TCB] Failed to extract latest chapter for ${mangaName}`);
-            return null;
+        // fallback: get any chapter if English isn't available
+        if (!chapter) {
+            const fallbackUrl = `https://api.mangadex.org/chapter?manga=${mangaId}&order[chapter]=desc&limit=1`;
+            const { data: fallbackRes } = await axios.get(fallbackUrl);
+            chapter = fallbackRes.data?.[0];
+            lang = chapter?.attributes?.translatedLanguage || 'unknown';
         }
+
+        if (!chapter) return null;
+
+        const chapterNumber = parseFloat(chapter.attributes.chapter || '0');
+        const chapterId = chapter.id;
+        const link = `https://mangadex.org/chapter/${chapterId}`;
+        const langNote = lang !== 'en' ? ` _(⚠️ English version not found — this one is in ${lang})_` : '';
 
         return {
-            mangaTitle: title,
-            latestChapter: chapterNum,
-            latestChapterUrl: latestChapterUrl
+            mangaTitle: manga.attributes.title.en || mangaName,
+            latestChapter: chapterNumber,
+            latestChapterUrl: `${link}${langNote}`
         };
-
     } catch (err) {
-        console.error(`[TCB] Error while scraping ${mangaName}:`, err.message);
+        console.error(`[MangaDex] Error fetching ${mangaName}:`, err.message);
         return null;
     }
 }
+
+
 
 
 
@@ -302,6 +315,10 @@ cron.schedule('* * * * *', async () => {
         }
 
         for (const { userId, anime, sub, channelId } of entries) {
+            const notifiedUsers = new Set();
+            const key = `${userId}-${anime.name}`;
+            if (notifiedUsers.has(key)) continue;
+            notifiedUsers.add(key);
             console.log(`[CHECK] Anime: ${anime.name} — Current: ${anime.currentEpisode}, Latest: ${info.latestEpisode}`);
             anime.newEpisode = info.latestEpisode;
 
@@ -400,8 +417,10 @@ client.on('messageCreate', async (message) => {
         'get_anime',
         'get_manga',
         'setchannel',
-        'setnotificationchannel'
+        'setnotificationchannel',
+        'question' 
     ];
+
 
 
 
@@ -483,6 +502,11 @@ client.on('messageCreate', async (message) => {
                     name: '**setnotificationchannel <channel name>**', 
                     value: 'Set the channel where notifications are sent (optional).', 
                     inline: false 
+                },
+                {
+                name: '**question <anime name> -- <your question>**',
+                value: 'Ask a question about an anime. Example: `@BotName question One Piece -- Who is Luffy’s brother?`',
+                inline: false
                 }
             )
             .setFooter({ text: 'Mention the bot or use @BotName help to see this menu anytime.' });
@@ -607,6 +631,41 @@ client.on('messageCreate', async (message) => {
         await subscription.save();
         return message.channel.send(`Unsubscribed from ${mangaName} manga updates.`);
     }
+    if (command === 'question') {
+        const splitIndex = args.findIndex(word => word === '--');
+        if (splitIndex === -1) {
+            return message.channel.send('❌ Use: `@BotName question <anime name> -- <your question>`');
+        }
+
+        const animeName = args.slice(0, splitIndex).join(' ');
+        const userQuestion = args.slice(splitIndex + 1).join(' ');
+
+        try {
+            const prompt = `You are an anime expert. Answer clearly and briefly about the anime "${animeName}".\n\nQ: ${userQuestion}`;
+
+            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: [{ role: 'user', content: prompt }],
+                    max_tokens: 300
+                })
+            });
+
+            const json = await response.json();
+            const answer = json.choices?.[0]?.message?.content;
+            if (!answer) return message.channel.send("⚠️ Couldn't get an answer.");
+            return message.channel.send(`**Q:** ${userQuestion}\n**A:** ${answer}`);
+        } catch (err) {
+            console.error(`[AI Question] Error:`, err.message);
+            return message.channel.send('❌ Failed to contact AI service.');
+        }
+}
+
 
 
     return message.channel.send("Unknown command or missing arguments.");
